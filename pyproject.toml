@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qpmhc-mvp"
+version = "0.1.0"
+description = "A didactic peptide-MHC rigid-body Metropolis sampler with toy QM/MM charge options"
+readme = "README.md"
+requires-python = ">=3.10,<3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Q-pMHC-MVP contributors" }]
+dependencies = [
+  "biopython",
+  "numpy",
+  "pyscf",
+  "scipy",
+]
+
+[project.scripts]
+qpmhc = "qpmhc.core:main"
+
+[project.optional-dependencies]
+plots = ["matplotlib"]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
