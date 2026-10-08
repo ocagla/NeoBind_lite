@@ -1,7 +1,8 @@
 """
-Q-pMHC toy model
-================
-A deliberately minimal, didactic pipeline to explore one question:
+Q-pMHC
+======
+A deliberately minimal, didactic rigid-body Metropolis sampler for a
+peptide-MHC complex, built to explore one question:
 
     Does a quantum-derived (HF/Mulliken) peptide charge distribution give a
     different peptide-MHC electrostatic interaction than fixed force-field
@@ -14,6 +15,8 @@ Carlo of rigid-body moves.
 THIS IS A TOY. KNOWN LIMITATIONS (on purpose, to keep the code readable):
   1. Classical charges are a tiny hand-written table (backbone + formal charges
      on charged side chains), not a real force field (use AmberTools/OpenMM).
+     The table is not neutral by construction: its per-residue sum is not the
+     residue's formal charge, and the termini get no charge.
   2. Electrostatics use a distance-dependent dielectric (eps = 4r) as a crude
      stand-in for solvent screening. No Generalized Born / Poisson-Boltzmann.
   3. LJ is one generic (sigma, epsilon) for every atom pair.
@@ -27,9 +30,9 @@ THIS IS A TOY. KNOWN LIMITATIONS (on purpose, to keep the code readable):
   7. Starting from a crystal structure, most moves raise the energy: the
      sampler mostly measures the local "stiffness" of the toy potential.
 
-Usage:
-    python q_pmhc_toy.py data/raw/1DUZ.pdb --mode standard
-    python q_pmhc_toy.py data/raw/1DUZ.pdb --mode qm --add-hydrogens
+Usage (the default mode is qm, which needs hydrogens):
+    qpmhc data/raw/1DUZ.pdb --mode standard
+    qpmhc data/raw/1DUZ.pdb --mode qm --add-hydrogens
 """
 
 import argparse
@@ -139,10 +142,10 @@ def assign_toy_charges(atoms):
 # 3. Quantum engine (PySCF Hartree-Fock)
 # ------------------------------------------------------------------------------
 def peptide_formal_charge(pep):
-    """Net charge at pH ~7: termini (+1/-1 cancel) + charged side chains."""
-    seen = {}
-    for i, (r, n) in enumerate(zip(pep["resname"], pep["name"])):
-        seen.setdefault((r, n), i)
+    """Net charge at pH ~7 from charged side chains (LYS/ARG +1, ASP/GLU -1).
+
+    Zwitterionic termini (+1 and -1) are assumed and cancel; HIS is neutral.
+    """
     residues = []                       # one entry per residue, via its CA atom
     for r, n in zip(pep["resname"], pep["name"]):
         if n == "CA":

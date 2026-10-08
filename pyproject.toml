@@ -3,13 +3,13 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "qpmhc-mvp"
+name = "qpmhc"
 version = "0.1.0"
-description = "A didactic peptide-MHC rigid-body Metropolis sampler with toy QM/MM charge options"
+description = "Q-pMHC: a didactic rigid-body Metropolis sampler for a peptide-MHC complex comparing toy classical and gas-phase HF Mulliken peptide charges"
 readme = "README.md"
 requires-python = ">=3.10,<3.11"
 license = { file = "LICENSE" }
-authors = [{ name = "Q-pMHC-MVP contributors" }]
+authors = [{ name = "Q-pMHC contributors" }]
 dependencies = [
   "biopython",
   "numpy",

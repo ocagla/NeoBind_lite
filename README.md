@@ -1,4 +1,4 @@
-# Q-pMHC-MVP
+# Q-pMHC
 
 [![Python 3.10](https://img.shields.io/badge/python-3.10-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -9,12 +9,12 @@ Does a quantum-derived peptide charge distribution change the modeled peptide–
 
 ## Abstract
 
-Q-pMHC-MVP is a didactic sampler that compares a toy classical charge table with gas-phase PySCF Hartree–Fock Mulliken charges for the peptide in an HLA-A*0201 complex. It combines a distance-dependent Coulomb term and generic Lennard–Jones term with rigid-body Metropolis Monte Carlo; the resulting interaction energy is not a binding free energy.
+Q-pMHC is a didactic rigid-body Metropolis Monte Carlo sampler for a peptide–MHC complex (HLA-A*0201, PDB 1DUZ). It compares a toy classical charge table with QM-derived peptide charges: gas-phase, unembedded PySCF Hartree–Fock Mulliken charges. It reports an interaction energy under a toy potential (distance-dependent Coulomb plus a generic Lennard–Jones term). This energy is not a binding free energy. It is a learning project inspired by PELE, not a production tool.
 
 ## Repository layout
 
 ```text
-Q-pMHC-MVP/
+NeoBind_lite/
 |-- data/
 |   `-- raw/
 |       |-- .gitkeep
@@ -36,7 +36,7 @@ Q-pMHC-MVP/
 `-- README.md
 ```
 
-The supplied [RCSB PDB entry 1DUZ](https://www.rcsb.org/structure/1DUZ) is a 1.8 Å HLA-A*0201 structure with an HTLV-1 Tax peptide. Cite the primary study: Khan et al., “The structure and stability of an HLA-A*0201/octameric Tax peptide complex with an empty conserved peptide-N-terminal binding site,” *Journal of Immunology* 164(12), 6398–6405 (2000), [doi:10.4049/jimmunol.164.12.6398](https://doi.org/10.4049/jimmunol.164.12.6398). The paper is the primary citation associated with both 1DUY and 1DUZ.
+The supplied [RCSB PDB entry 1DUZ](https://www.rcsb.org/structure/1DUZ) is a 1.8 Å HLA-A*0201 structure with the nonameric HTLV-1 Tax peptide LLFGYPVYV (chain C; the PDB header also calls it "octameric"). Cite the primary study: Khan et al., “The structure and stability of an HLA-A*0201/octameric Tax peptide complex with an empty conserved peptide-N-terminal binding site,” *Journal of Immunology* 164(12), 6398–6405 (2000), [doi:10.4049/jimmunol.164.12.6398](https://doi.org/10.4049/jimmunol.164.12.6398). The paper is the primary citation associated with both 1DUY and 1DUZ.
 
 ## Quickstart
 
@@ -65,7 +65,7 @@ PDBFixer requires OpenMM; the install command follows the [PDBFixer manual](http
 
 ## Results
 
-With the supplied heavy-atom PDB, standard mode, 100 steps, and seed 42, the mean interaction energy after burn-in was **−11.46 ± 0.60 kcal/mol**, with a **24.0% acceptance rate**. The trace below is a toy-potential diagnostic, not an estimate of binding stability.
+With the supplied heavy-atom PDB, standard mode, 100 steps, and seed 42, the mean interaction energy after burn-in was **−11.46 ± 0.60 kcal/mol**, with a **24.0% acceptance rate**. The trace below is a diagnostic of the sampler on a toy potential.
 
 ![Standard-charge rigid-body Monte Carlo energy trace](results/standard_mc_trace.svg)
 
@@ -103,10 +103,14 @@ $$
 
 ## Scope and reproducibility
 
-The classical charge table is a small AMBER-like approximation, not a complete force field; Lennard–Jones parameters are identical for every atom pair. Sampling changes only rigid-body translation and rotation. Starting from a crystal pose, most moves raise this toy potential, so the run mainly probes local potential stiffness and acceptance behavior. The reported interaction energy omits desolvation, entropy, and protein reorganization and must not be interpreted as a binding free energy.
+The classical charge table is a small AMBER-like approximation, not a complete force field; Lennard–Jones parameters are identical for every atom pair. The table is **not charge-neutral**: for the heavy-atom 1DUZ peptide (formal charge 0) the toy charges sum to −3.489 e, because each residue's backbone N/CA/C/O sums to −0.388 e and the termini are uncharged. Mulliken charges always sum to the molecule's net charge, so standard and QM mode currently compare peptides with different total charge. Sampling changes only rigid-body translation and rotation. Starting from a crystal pose, most moves raise this toy potential, so the run mainly probes local potential stiffness and acceptance behavior. The reported interaction energy omits desolvation, entropy, and protein reorganization and must not be interpreted as a binding free energy.
 
 The Conda environment specifies Python 3.10 and the runtime/test dependencies. The CLI defaults to seed 42; the figure command records its step count and seed. Run tests from the repository root with:
 
 ```bash
 pytest
 ```
+
+## AI assistance
+
+The code and documentation in this repository were written with AI assistance (Claude Code) and reviewed by the author.
