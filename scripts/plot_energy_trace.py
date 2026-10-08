@@ -19,10 +19,11 @@ from qpmhc import core
 
 
 def main() -> int:
+    """Run standard-mode sampling and write the energy-trace figure."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("pdb", type=Path)
     parser.add_argument("--steps", type=int, default=100)
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seed", type=int, default=core.DEFAULT_SEED)
     parser.add_argument(
         "--output",
         type=Path,
@@ -39,7 +40,7 @@ def main() -> int:
         receptor["xyz"],
         receptor_charges,
         n_steps=args.steps,
-        temp=300.0,
+        temp=core.DEFAULT_TEMPERATURE,
         rng=np.random.default_rng(args.seed),
     )
 

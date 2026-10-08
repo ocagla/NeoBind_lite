@@ -36,9 +36,12 @@ Usage (the default mode is qm, which needs hydrogens):
     qpmhc data/raw/1DUZ.pdb --mode qm --add-hydrogens
 """
 
+from __future__ import annotations
+
 import argparse
 import os
 import tempfile
+from typing import Any
 
 import numpy as np
 from Bio.PDB import PDBParser
@@ -48,13 +51,31 @@ from scipy.spatial.transform import Rotation
 # ------------------------------------------------------------------------------
 # 1. Constants and toy-model parameters
 # ------------------------------------------------------------------------------
-KB = 0.0019872042            # Boltzmann constant, kcal/(mol*K)
-COULOMB_CONST = 332.06371    # kcal*A/(mol*e^2)
-EPS_SLOPE = 4.0              # distance-dependent dielectric: eps(r) = EPS_SLOPE * r
+# Physical constants
+KB = 0.0019872042            # Boltzmann constant per mole (gas constant R), kcal/(mol*K)
+COULOMB_CONST = 332.06371    # e^2 * N_A / (4*pi*eps0), kcal*A/(mol*e^2) (AMBER value)
+
+# Toy interaction model
+EPS_SLOPE = 4.0              # 1/A, distance-dependent dielectric: eps(r) = EPS_SLOPE * r
 R_MIN = 1.0                  # A, soft floor on distances (avoids singularities)
 LJ_SIGMA = 3.0               # A, generic for every pair (toy)
-LJ_EPSILON = 0.1             # kcal/mol, generic for every pair (toy)
+LJ_EPSILON = 0.1             # kcal/mol, generic well depth for every pair (toy)
+LJ_PREFACTOR = 4.0           # dimensionless; 4*eps puts the LJ minimum at exactly -eps
 POCKET_CUTOFF = 8.0          # A, receptor atoms kept around the peptide
+
+# Default run settings (also the CLI defaults)
+DEFAULT_PH = 7.0             # pH used by PDBFixer to choose protonation states
+DEFAULT_BASIS = "3-21g"      # Gaussian basis set for the HF peptide calculation
+DEFAULT_N_STEPS = 2000       # Monte Carlo trial moves per run
+DEFAULT_TEMPERATURE = 300.0  # K
+DEFAULT_SEED = 42            # NumPy random seed
+DEFAULT_MAX_SHIFT = 0.3      # A, max rigid translation per axis per trial move
+DEFAULT_MAX_ANGLE_DEG = 3.0  # degrees, max rigid rotation per trial move
+DEFAULT_BURN_IN = 0.2        # fraction of the trace discarded before averaging
+MIN_BLOCKS = 4               # fewest blocks block_average() uses for an SEM
+
+# Per-atom data: dict with "xyz" (N x 3 array, A) and "elem", "resname", "name" lists
+Atoms = dict[str, Any]
 
 # Backbone partial charges (AMBER-like values, kept from the original script)
 BACKBONE_CHARGES = {
@@ -75,8 +96,12 @@ ATOMIC_NUMBER = {"H": 1, "C": 6, "N": 7, "O": 8, "S": 16}
 # ------------------------------------------------------------------------------
 # 2. Structure handling
 # ------------------------------------------------------------------------------
-def add_hydrogens(pdb_path, ph=7.0):
-    """Protonate with PDBFixer (optional dependency). Returns a temp PDB path."""
+def add_hydrogens(pdb_path: str, ph: float = DEFAULT_PH) -> str:
+    """Protonate with PDBFixer (optional dependency) at the given pH.
+
+    Heterogens and waters are removed and missing heavy atoms (not missing
+    residues) are rebuilt. Returns the path of a temporary protonated PDB file.
+    """
     from pdbfixer import PDBFixer
     from openmm.app import PDBFile
 
@@ -93,23 +118,25 @@ def add_hydrogens(pdb_path, ph=7.0):
     return out
 
 
-def toy_charge(resname, atom_name):
-    """Toy classical charge for one atom (0.0 if not in the table)."""
+def toy_charge(resname: str, atom_name: str) -> float:
+    """Toy classical partial charge of one atom, in e (0.0 if not in the table)."""
     if (resname, atom_name) in SIDECHAIN_CHARGES:
         return SIDECHAIN_CHARGES[(resname, atom_name)]
     return BACKBONE_CHARGES.get(atom_name, 0.0)
 
 
-def load_complex(pdb_path, receptor_chain="A", peptide_chain="C", keep_h=False):
+def load_complex(pdb_path: str, receptor_chain: str = "A", peptide_chain: str = "C",
+                 keep_h: bool = False) -> tuple[Atoms, Atoms]:
     """
-    Returns (peptide, receptor) dicts with arrays: xyz, elem, resname, name.
-    Receptor is restricted to atoms within POCKET_CUTOFF of the peptide.
-    Waters/heteroatoms are ignored.
+    Returns (peptide, receptor) dicts with keys xyz (coordinates, A), elem,
+    resname, name. Receptor is restricted to atoms within POCKET_CUTOFF (A)
+    of any peptide atom. Waters/heteroatoms are ignored; hydrogens are
+    dropped unless keep_h is True.
     """
     structure = PDBParser(QUIET=True).get_structure("MHC", pdb_path)
     model = structure[0]                # a Structure holds models, not chains
 
-    def collect(chain):
+    def collect(chain) -> Atoms:
         rows = []
         for res in chain:
             if res.id[0] != " ":        # skip waters / ligands
@@ -135,15 +162,16 @@ def load_complex(pdb_path, receptor_chain="A", peptide_chain="C", keep_h=False):
     return pep, rec
 
 
-def assign_toy_charges(atoms):
+def assign_toy_charges(atoms: Atoms) -> np.ndarray:
+    """Toy classical partial charges (e) for every atom, in input order."""
     return np.array([toy_charge(r, n) for r, n in zip(atoms["resname"], atoms["name"])])
 
 
 # ------------------------------------------------------------------------------
 # 3. Quantum engine (PySCF Hartree-Fock)
 # ------------------------------------------------------------------------------
-def peptide_formal_charge(pep):
-    """Net charge at pH ~7 from charged side chains (LYS/ARG +1, ASP/GLU -1).
+def peptide_formal_charge(pep: Atoms) -> int:
+    """Net charge (e) at pH ~7 from charged side chains (LYS/ARG +1, ASP/GLU -1).
 
     Zwitterionic termini (+1 and -1) are assumed and cancel; HIS is neutral.
     """
@@ -154,8 +182,12 @@ def peptide_formal_charge(pep):
     return sum(RESIDUE_FORMAL_CHARGE.get(r, 0) for r in residues)
 
 
-def compute_qm_charges(pep, basis="3-21g"):
-    """HF/basis Mulliken charges of the isolated peptide (gas phase, no embedding)."""
+def compute_qm_charges(pep: Atoms, basis: str = DEFAULT_BASIS) -> tuple[np.ndarray, int]:
+    """HF/basis Mulliken charges (e) of the isolated peptide (gas phase, no embedding).
+
+    Coordinates are read in A. Returns (charges, formal net charge). Raises
+    ValueError if hydrogens are missing or the electron count is odd.
+    """
     from pyscf import gto, scf
 
     if "H" not in pep["elem"]:
@@ -181,30 +213,42 @@ def compute_qm_charges(pep, basis="3-21g"):
 # ------------------------------------------------------------------------------
 # 4. Interaction energy: screened Coulomb + generic Lennard-Jones
 # ------------------------------------------------------------------------------
-def interaction_energy(pep_xyz, pep_q, rec_xyz, rec_q):
+def interaction_energy(pep_xyz: np.ndarray, pep_q: np.ndarray, rec_xyz: np.ndarray,
+                       rec_q: np.ndarray) -> tuple[float, float, float]:
     """
+    Peptide-receptor interaction energy in kcal/mol; coordinates in A, charges in e.
+
     E_coul = 332.06 * sum q_i q_j / (eps(r) * r),  eps(r) = EPS_SLOPE * r
            = 332.06 * sum q_i q_j / (EPS_SLOPE * r^2)
     E_lj   = sum 4*eps*((s/r)^12 - (s/r)^6)
     Distances are floored at R_MIN instead of dropping pairs, so the energy
-    stays continuous.
+    stays continuous. Returns (total, Coulomb, LJ).
     """
     r = np.maximum(cdist(pep_xyz, rec_xyz), R_MIN)
     e_coul = COULOMB_CONST * np.sum(np.outer(pep_q, rec_q) / (EPS_SLOPE * r**2))
     sr6 = (LJ_SIGMA / r) ** 6
-    e_lj = np.sum(4.0 * LJ_EPSILON * (sr6**2 - sr6))
+    e_lj = np.sum(LJ_PREFACTOR * LJ_EPSILON * (sr6**2 - sr6))
     return e_coul + e_lj, e_coul, e_lj
 
 
 # ------------------------------------------------------------------------------
 # 5. Metropolis Monte Carlo (rigid-body moves)
 # ------------------------------------------------------------------------------
-def run_monte_carlo(pep_xyz, pep_q, rec_xyz, rec_q, n_steps=2000, temp=300.0,
-                    max_shift=0.3, max_angle_deg=3.0, burn_in=0.2, rng=None):
+def run_monte_carlo(pep_xyz: np.ndarray, pep_q: np.ndarray, rec_xyz: np.ndarray,
+                    rec_q: np.ndarray, n_steps: int = DEFAULT_N_STEPS,
+                    temp: float = DEFAULT_TEMPERATURE, max_shift: float = DEFAULT_MAX_SHIFT,
+                    max_angle_deg: float = DEFAULT_MAX_ANGLE_DEG,
+                    burn_in: float = DEFAULT_BURN_IN,
+                    rng: np.random.Generator | None = None) -> dict[str, Any]:
     """
     Random rigid translation (+/- max_shift A per axis) and rotation about the
     peptide centroid (random axis, angle in +/- max_angle_deg), accepted with
-    P = min(1, exp(-dE / kB T)). Proposals are symmetric, so plain Metropolis.
+    P = min(1, exp(-dE / kB T)), temp in K. Proposals are symmetric, so plain
+    Metropolis.
+
+    Returns energies in kcal/mol (start, mean, std of samples, block-averaging
+    sem, sem_naive), n_eff, block_size, n_production, acc_rate (%), trace
+    (n_steps + 1 energies) and final_coords (A).
     """
     rng = rng or np.random.default_rng()
     coords = pep_xyz.copy()
@@ -248,7 +292,7 @@ def run_monte_carlo(pep_xyz, pep_q, rec_xyz, rec_q, n_steps=2000, temp=300.0,
 # ------------------------------------------------------------------------------
 # 6. Statistics
 # ------------------------------------------------------------------------------
-def block_average(samples, min_blocks=4):
+def block_average(samples: np.ndarray, min_blocks: int = MIN_BLOCKS) -> dict[str, float]:
     """
     Standard error of the mean of a correlated series by block averaging.
 
@@ -257,7 +301,7 @@ def block_average(samples, min_blocks=4):
     so their scatter gives an honest SEM once blocks are longer than the
     correlation time. The largest SEM over block sizes is returned as a
     conservative estimate. n_eff = N * (sem_naive / sem)^2 is the number of
-    effectively independent samples.
+    effectively independent samples. Units follow the input (kcal/mol here).
     """
     x = np.asarray(samples, dtype=float)
     n = x.size
@@ -279,8 +323,11 @@ def block_average(samples, min_blocks=4):
             "n_eff": float(n_eff), "block_size": best_size}
 
 
-def summarize_seeds(results):
-    """Mean and sample standard deviation across independent runs (one per seed)."""
+def summarize_seeds(results: list[dict[str, Any]]) -> dict[str, float]:
+    """Mean and sample standard deviation across independent runs (one per seed).
+
+    Energies in kcal/mol, acceptance in %.
+    """
     means = np.array([r["mean"] for r in results])
     acc = np.array([r["acc_rate"] for r in results])
     spread = means.std(ddof=1) if means.size > 1 else np.nan
@@ -292,15 +339,16 @@ def summarize_seeds(results):
 # ------------------------------------------------------------------------------
 # 7. Main
 # ------------------------------------------------------------------------------
-def main():
+def main() -> None:
+    """Command-line entry point (the qpmhc console script)."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("pdb", nargs="?", default="data/raw/1DUZ.pdb")
     ap.add_argument("--mode", choices=["qm", "standard"], default="qm")
     ap.add_argument("--add-hydrogens", action="store_true", help="protonate with PDBFixer (needed for qm)")
-    ap.add_argument("--basis", default="3-21g")
-    ap.add_argument("--steps", type=int, default=2000)
-    ap.add_argument("--temp", type=float, default=300.0)
-    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--basis", default=DEFAULT_BASIS)
+    ap.add_argument("--steps", type=int, default=DEFAULT_N_STEPS)
+    ap.add_argument("--temp", type=float, default=DEFAULT_TEMPERATURE)
+    ap.add_argument("--seed", type=int, default=DEFAULT_SEED)
     ap.add_argument("--n-seeds", type=int, default=1,
                     help="independent runs with seeds seed, seed+1, ...; reports mean and spread")
     args = ap.parse_args()
