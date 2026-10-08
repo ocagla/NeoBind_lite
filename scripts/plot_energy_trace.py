@@ -57,7 +57,9 @@ def main() -> int:
     print(f"Wrote {args.output}")
     print(
         f"Mean after burn-in: {result['mean']:.2f} +/- "
-        f"{result['std']:.2f} kcal/mol; acceptance: {result['acc_rate']:.1f}%"
+        f"{result['std']:.2f} kcal/mol (std of samples); "
+        f"SEM (block averaging): {result['sem']:.2f} kcal/mol; "
+        f"acceptance: {result['acc_rate']:.1f}%"
     )
     return 0
 

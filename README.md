@@ -49,7 +49,7 @@ pip install -e .
 qpmhc data/raw/1DUZ.pdb --mode standard --steps 100
 ```
 
-The console command and `python -m qpmhc.core` accept the same arguments. By default, the workflow uses receptor chain A and peptide chain C, runs 2,000 steps at 300 K, and seeds the sampler with 42. Pass `--steps` and `--seed` to set these explicitly.
+The console command and `python -m qpmhc.core` accept the same arguments. By default, the workflow uses receptor chain A and peptide chain C, runs 2,000 steps at 300 K, and seeds the sampler with 42. Pass `--steps` and `--seed` to set these explicitly, and `--n-seeds N` to run N independent seeds (seed, seed+1, …) and report the mean and spread across them. The default `--mode` is `qm`, which needs hydrogens, so pass `--mode standard` for the supplied heavy-atom file.
 
 ### Comparing standard and QM charges
 
@@ -65,7 +65,20 @@ PDBFixer requires OpenMM; the install command follows the [PDBFixer manual](http
 
 ## Results
 
-With the supplied heavy-atom PDB, standard mode, 100 steps, and seed 42, the mean interaction energy after burn-in was **−11.46 ± 0.60 kcal/mol**, with a **24.0% acceptance rate**. The trace below is a diagnostic of the sampler on a toy potential.
+All numbers below come from runs of the commands shown, on the supplied heavy-atom PDB in standard mode at 300 K. The first 20% of each trace is discarded as burn-in. "SEM" is the standard error of the mean from block averaging, which accounts for consecutive Monte Carlo samples being correlated. The spread of the individual samples (std) is a different quantity and is not an uncertainty of the mean.
+
+| Run | Mean interaction energy | Uncertainty | Acceptance |
+|---|---|---|---|
+| `--steps 100 --seed 42` | −11.46 kcal/mol | std 0.60, SEM 0.18 (81 samples, ~11 independent) | 24.0% |
+| `--steps 2000 --seed 42 --n-seeds 5` (seeds 42–46) | −13.84 kcal/mol | seed-to-seed std 0.18, SEM 0.08 | 14.2 ± 1.5% |
+
+The 100-step quickstart is too short to equilibrate: the longer runs settle about 2.4 kcal/mol lower, so treat the quickstart value as a smoke test only. The starting crystal pose has E = −11.6 kcal/mol (Coulomb +24.2, LJ −35.8). The Coulomb term is repulsive partly because the toy peptide charges are not neutral (see *Scope and reproducibility*). These are interaction energies under a toy potential.
+
+```bash
+qpmhc data/raw/1DUZ.pdb --mode standard --steps 2000 --n-seeds 5
+```
+
+The trace below (100 steps, seed 42) is a diagnostic of the sampler on a toy potential.
 
 ![Standard-charge rigid-body Monte Carlo energy trace](results/standard_mc_trace.svg)
 

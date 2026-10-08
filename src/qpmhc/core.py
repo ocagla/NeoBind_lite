@@ -24,7 +24,8 @@ THIS IS A TOY. KNOWN LIMITATIONS (on purpose, to keep the code readable):
      geometry, NO electrostatic embedding (the peptide is not polarized by the
      MHC). Mulliken charges are strongly basis-set dependent.
   5. Sampling is rigid-body only (translation + rotation). No peptide or
-     side-chain flexibility, no minimization, no convergence analysis.
+     side-chain flexibility, no minimization. Uncertainty is only a
+     block-averaging SEM (plus optional seed-to-seed spread).
   6. The output is an interaction energy, NOT a binding free energy: no
      desolvation, entropy or protein reorganization.
   7. Starting from a crystal structure, most moves raise the energy: the
@@ -228,10 +229,16 @@ def run_monte_carlo(pep_xyz, pep_q, rec_xyz, rec_q, n_steps=2000, temp=300.0,
 
     trace = np.array(trace)
     production = trace[int(burn_in * len(trace)):]
+    blocks = block_average(production)
     return {
         "start": e_start,
         "mean": production.mean(),
         "std": production.std(),
+        "sem": blocks["sem"],
+        "sem_naive": blocks["sem_naive"],
+        "n_eff": blocks["n_eff"],
+        "block_size": blocks["block_size"],
+        "n_production": production.size,
         "acc_rate": 100.0 * accepted / n_steps,
         "trace": trace,
         "final_coords": coords,
@@ -239,7 +246,51 @@ def run_monte_carlo(pep_xyz, pep_q, rec_xyz, rec_q, n_steps=2000, temp=300.0,
 
 
 # ------------------------------------------------------------------------------
-# 6. Main
+# 6. Statistics
+# ------------------------------------------------------------------------------
+def block_average(samples, min_blocks=4):
+    """
+    Standard error of the mean of a correlated series by block averaging.
+
+    The series is cut into blocks of 1, 2, 4, ... samples (keeping at least
+    `min_blocks` blocks). Block means are less correlated than single samples,
+    so their scatter gives an honest SEM once blocks are longer than the
+    correlation time. The largest SEM over block sizes is returned as a
+    conservative estimate. n_eff = N * (sem_naive / sem)^2 is the number of
+    effectively independent samples.
+    """
+    x = np.asarray(samples, dtype=float)
+    n = x.size
+    if n < 2:
+        return {"mean": float(x.mean()) if n else np.nan, "sem": np.nan,
+                "sem_naive": np.nan, "n_eff": float(n), "block_size": 1}
+    sem_naive = x.std(ddof=1) / np.sqrt(n)
+    best_sem, best_size = sem_naive, 1
+    size = 1
+    while n // size >= min_blocks:
+        n_blocks = n // size
+        means = x[: n_blocks * size].reshape(n_blocks, size).mean(axis=1)
+        sem = means.std(ddof=1) / np.sqrt(n_blocks)
+        if sem > best_sem:
+            best_sem, best_size = sem, size
+        size *= 2
+    n_eff = n * (sem_naive / best_sem) ** 2 if best_sem > 0 else float(n)
+    return {"mean": float(x.mean()), "sem": float(best_sem), "sem_naive": float(sem_naive),
+            "n_eff": float(n_eff), "block_size": best_size}
+
+
+def summarize_seeds(results):
+    """Mean and sample standard deviation across independent runs (one per seed)."""
+    means = np.array([r["mean"] for r in results])
+    acc = np.array([r["acc_rate"] for r in results])
+    spread = means.std(ddof=1) if means.size > 1 else np.nan
+    acc_spread = acc.std(ddof=1) if acc.size > 1 else np.nan
+    return {"n_seeds": means.size, "mean": means.mean(), "std": spread,
+            "sem": spread / np.sqrt(means.size), "acc_mean": acc.mean(), "acc_std": acc_spread}
+
+
+# ------------------------------------------------------------------------------
+# 7. Main
 # ------------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -250,9 +301,12 @@ def main():
     ap.add_argument("--steps", type=int, default=2000)
     ap.add_argument("--temp", type=float, default=300.0)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--n-seeds", type=int, default=1,
+                    help="independent runs with seeds seed, seed+1, ...; reports mean and spread")
     args = ap.parse_args()
+    if args.n_seeds < 1:
+        ap.error("--n-seeds must be >= 1")
 
-    rng = np.random.default_rng(args.seed)
     print(f"=== Q-pMHC toy model [mode: {args.mode.upper()}] ===")
 
     pdb = add_hydrogens(args.pdb) if args.add_hydrogens else args.pdb
@@ -282,12 +336,25 @@ def main():
     print(f"[3] Starting structure: E = {e0:.1f} kcal/mol (Coulomb {ec:.1f}, LJ {el:.1f})")
 
     print(f"[4] Metropolis MC: {args.steps} steps at {args.temp:.0f} K...")
-    res = run_monte_carlo(pep["xyz"], pep_q, rec["xyz"], rec_q,
-                          n_steps=args.steps, temp=args.temp, rng=rng)
+    seeds = [args.seed + i for i in range(args.n_seeds)]
+    runs = [run_monte_carlo(pep["xyz"], pep_q, rec["xyz"], rec_q, n_steps=args.steps,
+                            temp=args.temp, rng=np.random.default_rng(s)) for s in seeds]
+    res = runs[0]
 
     print("\n--- SUMMARY ---")
-    print(f"Mean interaction energy (after burn-in): {res['mean']:.2f} +/- {res['std']:.2f} kcal/mol")
-    print(f"Acceptance rate: {res['acc_rate']:.1f} %")
+    if args.n_seeds == 1:
+        print(f"Mean interaction energy (after burn-in): {res['mean']:.2f} +/- {res['std']:.2f} kcal/mol (std of samples)")
+        print(f"Standard error of the mean (block averaging): {res['sem']:.2f} kcal/mol "
+              f"[{res['n_production']} samples, ~{res['n_eff']:.0f} effectively independent]")
+        print(f"Acceptance rate: {res['acc_rate']:.1f} %")
+    else:
+        for s, r in zip(seeds, runs):
+            print(f"  seed {s}: mean {r['mean']:.2f} +/- {r['sem']:.2f} (SEM, block), "
+                  f"acceptance {r['acc_rate']:.1f} %")
+        agg = summarize_seeds(runs)
+        print(f"Across {agg['n_seeds']} seeds: mean {agg['mean']:.2f} kcal/mol, "
+              f"spread (std) {agg['std']:.2f}, SEM {agg['sem']:.2f}")
+        print(f"Acceptance rate across seeds: {agg['acc_mean']:.1f} +/- {agg['acc_std']:.1f} %")
     print("Reminder: toy interaction energy, not a binding free energy.")
 
 
